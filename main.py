@@ -5,7 +5,7 @@ import threading
 import csv
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QTextEdit, QListWidget, QMessageBox, QFileDialog
+    QPushButton, QTextEdit, QListWidget, QMessageBox, QFileDialog, QFrame
 )
 from PyQt6.QtCore import Qt, QTimer
 
@@ -40,10 +40,10 @@ class LoginWindow(QWidget):
         self.setLayout(layout)
 
     def keyPressEvent(self, event):
-        # ← NEW: Press Enter = login
+        # Press Enter = login
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             self.handle_login()
-            
+
     def toggle_host_button(self):
         self.host_button.setText("☑ Host Game" if self.host_button.isChecked() else "☐ Host Game")
 
@@ -88,22 +88,76 @@ class ChatWindow(QWidget):
         layout = QHBoxLayout()
         left = QVBoxLayout()
         right = QVBoxLayout()
+        self.setLayout(layout)
 
-        # Chat area
+        # ───────────────────────────────────────────
+        # CHAT AREA
+        # ───────────────────────────────────────────
+        left.addWidget(QLabel(f"Logged in as: {username}"))
+
         self.chat_display = QTextEdit()
         self.chat_display.setReadOnly(True)
+        left.addWidget(self.chat_display)
+
         self.chat_input = QLineEdit()
         self.chat_input.returnPressed.connect(self.send_chat)
-        left.addWidget(QLabel(f"Logged in as: {username}"))
-        left.addWidget(self.chat_display)
         left.addWidget(self.chat_input)
 
-        # Player list
+        # ───────────────────────────────────────────
+        # GAME UI (hidden by default)
+        # ───────────────────────────────────────────
+        self.game_frame = QFrame()
+        game_layout = QVBoxLayout()
+        self.game_frame.setLayout(game_layout)
+        self.game_frame.hide()  # start hidden
+
+        # Question label
+        self.question_label = QLabel("QUESTION TEXT")
+        self.question_label.setWordWrap(True)
+        self.question_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.question_label.setStyleSheet("font-size: 20px; font-weight: bold; margin: 10px;")
+        game_layout.addWidget(self.question_label)
+
+        # Full-width bubble answer buttons
+        self.answer_buttons = []
+        for i in range(4):
+            btn = QPushButton(f"Choice {i+1}")
+            btn.setFixedHeight(45)
+            btn.clicked.connect(self.handle_answer)
+
+            # store letter mapping A/B/C/D while showing full text
+            btn.choice_letter = chr(65 + i)  # 'A', 'B', 'C', 'D'
+
+            btn.setStyleSheet("""
+                QPushButton {
+                    border: 2px solid #666;
+                    border-radius: 20px;
+                    padding: 10px;
+                    font-size: 16px;
+                    background-color: #f2f2f2;
+                    text-align: left;
+                }
+                QPushButton:hover {
+                    background-color: #e6e6e6;
+                }
+                QPushButton:pressed {
+                    background-color: #cccccc;
+                }
+            """)
+
+            btn.setEnabled(False)
+            game_layout.addWidget(btn)
+            self.answer_buttons.append(btn)
+
+        left.addWidget(self.game_frame)
+
+        # ───────────────────────────────────────────
+        # PLAYER LIST + HOST / JOIN CONTROLS
+        # ───────────────────────────────────────────
         self.player_list = QListWidget()
         right.addWidget(QLabel("Scores:"))
         right.addWidget(self.player_list)
 
-        # Host controls
         if self.is_host:
             self.upload_btn = QPushButton("Upload Questions (CSV)")
             self.create_btn = QPushButton("Create Game")
@@ -123,29 +177,14 @@ class ChatWindow(QWidget):
             right.addWidget(self.join_input)
             right.addWidget(self.join_btn)
 
-        # Answer buttons
-        self.answer_buttons = []
-        ans_layout = QHBoxLayout()
-        for opt in ["A", "B", "C", "D"]:
-            btn = QPushButton(opt)
-            btn.setFixedWidth(60)
-            btn.clicked.connect(self.handle_answer)
-            self.answer_buttons.append(btn)
-            ans_layout.addWidget(btn)
-        left.addLayout(ans_layout)
-
-        for b in self.answer_buttons:
-            b.setEnabled(False)
-
         layout.addLayout(left, 3)
         layout.addLayout(right, 1)
-        self.setLayout(layout)
 
         # Listener
         self.listener = ListenerThread(self.conn, self)
         self.listener.start()
 
-        # Timer
+        # Timer (currently unused but kept to avoid breaking anything)
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_timer)
         self.time_left = 0
@@ -197,19 +236,26 @@ class ChatWindow(QWidget):
         msg = {"action": "start_game"}
         self.conn.sendall(json.dumps(msg).encode("utf-8"))
 
+    # ───────────────────────────────────────────────
+    # ANSWER HANDLING (BUBBLE BUTTONS)
+    # ───────────────────────────────────────────────
     def handle_answer(self):
         if self.has_answered:
             return
+
         sender = self.sender()
-        choice = sender.text()
-        msg = {"action": "answer", "choice": choice}
+        # We send the LETTER (A/B/C/D) so server scoring logic remains unchanged.
+        choice_letter = getattr(sender, "choice_letter", sender.text())
+
+        msg = {"action": "answer", "choice": choice_letter}
         self.conn.sendall(json.dumps(msg).encode("utf-8"))
+
         self.has_answered = True
         for b in self.answer_buttons:
             b.setEnabled(False)
 
     # ───────────────────────────────────────────────
-    # TIMER + DISPLAY
+    # TIMER + DISPLAY (server still sends timer messages)
     # ───────────────────────────────────────────────
     def update_timer(self):
         if self.time_left > 0:
@@ -232,9 +278,49 @@ class ChatWindow(QWidget):
             self.player_list.addItem(f"{p['username']}: {p['score']}")
 
     # ───────────────────────────────────────────────
-    # QUESTION DISPLAY
+    # NEW: QUESTION DISPLAY (BUBBLE UI)
+    # ───────────────────────────────────────────────
+    def show_question(self, question, choices):
+        """
+        Show the question + 4 answer bubbles and hide the chat UI.
+        choices: list of 4 answer strings.
+        """
+        self.has_answered = False
+
+        # hide chat widgets
+        self.chat_display.hide()
+        self.chat_input.hide()
+
+        # update question and buttons
+        self.question_label.setText(question)
+
+        for i in range(4):
+            text = choices[i] if i < len(choices) else ""
+            self.answer_buttons[i].setText(text)
+            self.answer_buttons[i].setEnabled(bool(text))
+
+        self.game_frame.show()
+
+    def hide_question(self):
+        """
+        Hide the game UI and bring chat back (used when 'end_question' arrives).
+        """
+        self.game_frame.hide()
+        self.chat_display.show()
+        self.chat_input.show()
+
+        # just in case, disable buttons until the next question
+        for b in self.answer_buttons:
+            b.setEnabled(False)
+
+    # ───────────────────────────────────────────────
+    # LEGACY: TEXT QUESTION (kept but no longer used)
     # ───────────────────────────────────────────────
     def display_question(self, question, choices):
+        """
+        Old behavior: print question/answers into chat and enable A–D buttons.
+        Left here in case anything else calls it, but Listener now uses show_question().
+        """
         self.chat_display.append(f"\n[QUESTION] {question}")
         for i, c in enumerate(choices):
             self.chat_display.append(f"{chr(65+i)}. {c}")
@@ -275,9 +361,17 @@ class ListenerThread(threading.Thread):
             self.window.chat_display.append(f"{msg.get('username')}: {msg.get('message')}")
 
         elif t == "question":
+            # NEW: use the bubble UI instead of printing in chat
             q = msg.get("question")
             c = msg.get("choices", [])
-            self.window.display_question(q, c)
+            # Always expect 4 choices; pad/trim just in case
+            while len(c) < 4:
+                c.append("")
+            self.window.show_question(q, c[:4])
+
+        elif t == "end_question":
+            # NEW: end of this question → bring back chat UI
+            self.window.hide_question()
 
         elif t == "timer":
             remaining = msg.get("remaining")

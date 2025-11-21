@@ -2,7 +2,7 @@ import socket
 import threading
 import json
 import time
-import random     # ← NEW: for random game codes
+import random  # for random game codes
 
 HOST = "0.0.0.0"
 PORT = 65432
@@ -38,6 +38,7 @@ def start_question_timer(game_code):
         q = game["questions"][game["index"]]
         correct = q["answer"].strip().lower()
 
+        # score answers
         for uname, pdata in game["players"].items():
             if pdata["choice"] and pdata["choice"].lower() == correct:
                 game["scores"][uname] += 1
@@ -49,6 +50,10 @@ def start_question_timer(game_code):
             "players": score_list
         })
 
+        # NEW: signal clients that this question phase is over
+        broadcast(game_code, {"type": "end_question"})
+
+        # move to next question or end game
         game["index"] += 1
         if game["index"] < len(game["questions"]):
             time.sleep(3)
@@ -96,7 +101,7 @@ def handle_client(conn, addr):
                 print(f"[LOGIN] {username} connected.")
 
             elif act == "create_game":
-                # ← NEW: random 4-digit code per game
+                # random 4-digit code per game
                 while True:
                     game_code = str(random.randint(1000, 9999))
                     if game_code not in games:
